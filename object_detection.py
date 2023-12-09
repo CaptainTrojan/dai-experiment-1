@@ -20,7 +20,7 @@ from time import monotonic
 parser = argparse.ArgumentParser()
 parser.add_argument("-m", "--model", help="Provide model name or model path for inference",
                     default='yolov7tiny_waldo_416x768', type=str)
-parser.add_argument("-v", "--video", help="Path to video file", default='street_2_out.mp4', type=str)
+parser.add_argument("-v", "--video", help="Path to video file", default='pexels_street_1.mp4', type=str)
 args = parser.parse_args()
 
 config_path = f"https://raw.githubusercontent.com/luxonis/depthai-model-zoo/main/models/{args.model}/config.json"
@@ -30,7 +30,7 @@ config = requests.get(config_path).text
 config = json.loads(config)
 
 config["nn_config"]["NN_specific_metadata"]["confidence_threshold"] = 0.3
-config["nn_config"]["NN_specific_metadata"]["iou_threshold"] = 0.05
+config["nn_config"]["NN_specific_metadata"]["iou_threshold"] = 0.2
 if "input_size" not in config["nn_config"]:
     config["nn_config"]["input_size"] = args.model.split("_")[-1]
 labelMap = config["mappings"]["labels"]
@@ -107,7 +107,7 @@ objectTracker.inputDetectionFrame.setBlocking(True)
 objectTracker.inputDetections.setBlocking(True)
 # objectTracker.setDetectionLabelsToTrack([0])  # track only car
 # possible tracking types: ZERO_TERM_COLOR_HISTOGRAM, ZERO_TERM_IMAGELESS, SHORT_TERM_IMAGELESS, SHORT_TERM_KCF
-objectTracker.setTrackerType(dai.TrackerType.SHORT_TERM_IMAGELESS)
+objectTracker.setTrackerType(dai.TrackerType.ZERO_TERM_IMAGELESS)
 # take the smallest ID when new object is tracked, possible options: SMALLEST_ID, UNIQUE_ID
 objectTracker.setTrackerIdAssignmentPolicy(dai.TrackerIdAssignmentPolicy.SMALLEST_ID)
 
