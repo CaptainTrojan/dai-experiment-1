@@ -105,7 +105,7 @@ manip.inputImage.setBlocking(True)
 objectTracker.inputTrackerFrame.setBlocking(True)
 objectTracker.inputDetectionFrame.setBlocking(True)
 objectTracker.inputDetections.setBlocking(True)
-objectTracker.setDetectionLabelsToTrack([0])  # track only car
+# objectTracker.setDetectionLabelsToTrack([0])  # track only car
 # possible tracking types: ZERO_TERM_COLOR_HISTOGRAM, ZERO_TERM_IMAGELESS, SHORT_TERM_IMAGELESS, SHORT_TERM_KCF
 objectTracker.setTrackerType(dai.TrackerType.SHORT_TERM_IMAGELESS)
 # take the smallest ID when new object is tracked, possible options: SMALLEST_ID, UNIQUE_ID
@@ -121,6 +121,9 @@ detectionNetwork.out.link(objectTracker.inputDetections)
 detectionNetwork.passthrough.link(objectTracker.inputDetectionFrame)
 objectTracker.out.link(trackerOut.input)
 objectTracker.passthroughTrackerFrame.link(xlinkOut.input)
+
+# with open('pipeline.json', 'w') as outfile:
+#     json.dump(pipeline.serializeToJson(), outfile, indent=4)
 
 with dai.Device(pipeline) as device:
 
@@ -144,14 +147,13 @@ with dai.Device(pipeline) as device:
         normVals = np.full(len(bbox), frame.shape[0])
         normVals[::2] = frame.shape[1]
         return (np.clip(np.array(bbox), 0, 1) * normVals).astype(int)
-
-    def displayFrame(name, frame):
-        for detection in detections:
-            bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
-            cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 0), 2)
-            cv2.putText(frame, labelMap[detection.label], (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-        cv2.imshow(name, frame)
+    
+    def addTransparentRectangle(color, x1, y1, x2, y2, trackerFrame, alpha):
+        tracker_slice = trackerFrame[y1:y2, x1:x2]
+        colored_rectangle_numpy = np.zeros_like(tracker_slice, dtype=np.uint8)
+        colored_rectangle_numpy[:] = color
+        res = cv2.addWeighted(tracker_slice, 1-alpha, colored_rectangle_numpy, alpha, 0, tracker_slice)
+        trackerFrame[y1:y2, x1:x2] = res
 
     cap = cv2.VideoCapture(args.video)
     baseTs = time.monotonic()
@@ -189,30 +191,75 @@ with dai.Device(pipeline) as device:
             startTime = current_time
 
         detections = inDet.detections
-        # manipFrame = manip.getCvFrame()
-        # displayFrame("nn", manipFrame)
 
-        color = (255, 0, 0)
+        color_palette_16 = [
+            (255, 105, 97),  # Salmon
+            (255, 179, 71),  # Orange
+            (255, 209, 102), # Yellow
+            (144, 238, 144), # Light Green
+            (102, 205, 170), # Medium Aquamarine
+            (100, 149, 237), # Cornflower Blue
+            (70, 130, 180),  # Steel Blue
+            (135, 206, 235), # Sky Blue
+            (106, 90, 205),  # Slate Blue
+            (123, 104, 238), # Medium Purple
+            (147, 112, 219), # Medium Purple
+            (219, 112, 147), # Pale Violet Red
+            (255, 20, 147),  # Deep Pink
+            (255, 105, 180), # Hot Pink
+            (255, 182, 193), # Light Pink
+            (255, 192, 203)  # Pink
+        ]
         trackerFrame = trackFrame.getCvFrame()
+        tracker_frame_mask = np.zeros_like(trackerFrame, dtype=np.uint8)
         trackletsData = track.tracklets
-        for t in trackletsData:
-            roi = t.roi.denormalize(trackerFrame.shape[1], trackerFrame.shape[0])
+        tracklets_to_draw = trackletsData
+        # tracklets_to_draw = []
+        
+        # for tracklet in trackletsData:
+        #     roi = tracklet.roi
+        #     x1 = roi.topLeft().x
+        #     y1 = roi.topLeft().y
+        #     x2 = roi.bottomRight().x
+        #     y2 = roi.bottomRight().y
+            
+        #     for i in range(len(tracklets_to_draw)):
+        #         other_tracklet = tracklets_to_draw[i]
+        #         other_roi = other_tracklet.roi
+        #         other_x1 = other_roi.topLeft().x
+        #         other_y1 = other_roi.topLeft().y
+        #         other_x2 = other_roi.bottomRight().x
+        #         other_y2 = other_roi.bottomRight().y
+                
+        #         if (x1 >= other_x1 and x1 <= other_x2) or (x2 >= other_x1 and x2 <= other_x2) or (other_x1 >= x1 and other_x1 <= x2) or (other_x2 >= x1 and other_x2 <= x2):
+        #             if (y1 >= other_y1 and y1 <= other_y2) or (y2 >= other_y1 and y2 <= other_y2) or (other_y1 >= y1 and other_y1 <= y2) or (other_y2 >= y1 and other_y2 <= y2):
+        #                 if tracklet.roi.area() > other_tracklet.roi.area():
+        #                     tracklets_to_draw[i] = tracklet
+        #                 break
+                
+        #     else:
+        #         tracklets_to_draw.append(tracklet)
+        
+        for tracklet in tracklets_to_draw:
+            roi = tracklet.roi.denormalize(trackerFrame.shape[1], trackerFrame.shape[0])
             x1 = int(roi.topLeft().x)
             y1 = int(roi.topLeft().y)
             x2 = int(roi.bottomRight().x)
             y2 = int(roi.bottomRight().y)
 
             try:
-                label = labelMap[t.label]
+                label = labelMap[tracklet.label]
             except:
-                label = t.label
+                label = tracklet.label
 
-            cv2.putText(trackerFrame, str(label), (x1, y1), cv2.FONT_HERSHEY_TRIPLEX, 0.3, 120)
             # cv2.putText(trackerFrame, f"ID: {[t.id]}", (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
             # cv2.putText(trackerFrame, t.status.name, (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            cv2.rectangle(trackerFrame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
-
-        cv2.putText(trackerFrame, "Fps: {:.2f}".format(fps), (2, trackerFrame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
+            
+            color = color_palette_16[tracklet.label]
+            addTransparentRectangle(color, x1, y1, x2, y2, trackerFrame, 0.3)
+            tracker_frame_mask[y1:y2, x1:x2] = 1
+            # addTransparentRectangle(color, x1, y1 - 10, x1 + 40, y1, trackerFrame, 0.3)
+            cv2.putText(trackerFrame, str(label), (x1, y1), cv2.FONT_HERSHEY_TRIPLEX, 0.3, (255, 255, 255))
 
         cv2.imshow("tracker", trackerFrame)
 
