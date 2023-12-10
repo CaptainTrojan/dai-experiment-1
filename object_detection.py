@@ -71,20 +71,11 @@ syncNN = True
 pipeline = dai.Pipeline()
 
 # Define sources and outputs
-manip = pipeline.create(dai.node.ImageManip)
-objectTracker = pipeline.create(dai.node.ObjectTracker)
+inputVideo = pipeline.create(dai.node.XLinkIn)
 detectionNetwork = pipeline.create(dai.node.YoloDetectionNetwork)
-
-manipOut = pipeline.create(dai.node.XLinkOut)
-xinFrame = pipeline.create(dai.node.XLinkIn)
-trackerOut = pipeline.create(dai.node.XLinkOut)
-xlinkOut = pipeline.create(dai.node.XLinkOut)
 nnOut = pipeline.create(dai.node.XLinkOut)
 
-manipOut.setStreamName("manip")
-xinFrame.setStreamName("inFrame")
-xlinkOut.setStreamName("trackerFrame")
-trackerOut.setStreamName("tracklets")
+inputVideo.setStreamName("inFrame")
 nnOut.setStreamName("nn")
 
 # Network specific settings
@@ -98,46 +89,44 @@ detectionNetwork.setBlobPath(nnPath)
 detectionNetwork.setNumInferenceThreads(2)
 detectionNetwork.input.setBlocking(False)
 
-manip.initialConfig.setResizeThumbnail(W, H)
-manip.initialConfig.setFrameType(dai.ImgFrame.Type.BGR888p)
-manip.inputImage.setBlocking(True)
-
-objectTracker.inputTrackerFrame.setBlocking(True)
-objectTracker.inputDetectionFrame.setBlocking(True)
-objectTracker.inputDetections.setBlocking(True)
-# objectTracker.setDetectionLabelsToTrack([0])  # track only car
-# possible tracking types: ZERO_TERM_COLOR_HISTOGRAM, ZERO_TERM_IMAGELESS, SHORT_TERM_IMAGELESS, SHORT_TERM_KCF
-objectTracker.setTrackerType(dai.TrackerType.ZERO_TERM_IMAGELESS)
-# take the smallest ID when new object is tracked, possible options: SMALLEST_ID, UNIQUE_ID
-objectTracker.setTrackerIdAssignmentPolicy(dai.TrackerIdAssignmentPolicy.SMALLEST_ID)
-
 # Linking
-manip.out.link(manipOut.input)
-manip.out.link(detectionNetwork.input)
-xinFrame.out.link(manip.inputImage)
-xinFrame.out.link(objectTracker.inputTrackerFrame)
+inputVideo.out.link(detectionNetwork.input)
 detectionNetwork.out.link(nnOut.input)
-detectionNetwork.out.link(objectTracker.inputDetections)
-detectionNetwork.passthrough.link(objectTracker.inputDetectionFrame)
-objectTracker.out.link(trackerOut.input)
-objectTracker.passthroughTrackerFrame.link(xlinkOut.input)
 
 # with open('pipeline.json', 'w') as outfile:
 #     json.dump(pipeline.serializeToJson(), outfile, indent=4)
 
 with dai.Device(pipeline) as device:
 
+    # Input queue will be used to send video frames to the device.
     qIn = device.getInputQueue(name="inFrame")
-    trackerFrameQ = device.getOutputQueue(name="trackerFrame", maxSize=4)
-    tracklets = device.getOutputQueue(name="tracklets", maxSize=4)
-    qManip = device.getOutputQueue(name="manip", maxSize=4)
-    qDet = device.getOutputQueue(name="nn", maxSize=4)
+    # Output queue will be used to get nn data from the video frames.
+    qDet = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
+
+    frame = None
+    detections = []
 
     startTime = time.monotonic()
     counter = 0
     fps = 0
-    detections = []
-    frame = None
+    color_palette_16 = [
+        (255, 105, 97),  # Salmon
+        (255, 179, 71),  # Orange
+        (255, 209, 102), # Yellow
+        (144, 238, 144), # Light Green
+        (102, 205, 170), # Medium Aquamarine
+        (100, 149, 237), # Cornflower Blue
+        (70, 130, 180),  # Steel Blue
+        (135, 206, 235), # Sky Blue
+        (106, 90, 205),  # Slate Blue
+        (123, 104, 238), # Medium Purple
+        (147, 112, 219), # Medium Purple
+        (219, 112, 147), # Pale Violet Red
+        (255, 20, 147),  # Deep Pink
+        (255, 105, 180), # Hot Pink
+        (255, 182, 193), # Light Pink
+        (255, 192, 203)  # Pink
+    ]
 
     def to_planar(arr: np.ndarray, shape: tuple) -> np.ndarray:
         return cv2.resize(arr, shape).transpose(2, 0, 1).flatten()
@@ -154,114 +143,52 @@ with dai.Device(pipeline) as device:
         colored_rectangle_numpy[:] = color
         res = cv2.addWeighted(tracker_slice, 1-alpha, colored_rectangle_numpy, alpha, 0, tracker_slice)
         trackerFrame[y1:y2, x1:x2] = res
+        
+    def displayFrame(name, frame):
+        for detection in detections:
+            bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
+            cv2.putText(frame, labelMap[detection.label], (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 0), 2)
+        # Show the frame
+        cv2.imshow(name, frame)
 
     cap = cv2.VideoCapture(args.video)
-    baseTs = time.monotonic()
-    simulatedFps = 30
-    inputFrameShape = (W, H)
-
+    frame_counter = 0
+    target_fps = 30
+    target_frame_time = 1.0 / target_fps
     while cap.isOpened():
+        start = time.time()
         read_correctly, frame = cap.read()
         if not read_correctly:
             break
-
+        
+        frame_counter += 1
+        #If the last frame is reached, reset the capture and the frame_counter
+        if frame_counter == cap.get(cv2.CAP_PROP_FRAME_COUNT):
+            frame_counter = 0 #Or whatever as long as it is the same as next line
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                
         img = dai.ImgFrame()
-        img.setType(dai.ImgFrame.Type.BGR888p)
-        img.setData(to_planar(frame, inputFrameShape))
-        img.setTimestamp(baseTs)
-        baseTs += 1/simulatedFps
-
-        img.setWidth(inputFrameShape[0])
-        img.setHeight(inputFrameShape[1])
+        img.setData(to_planar(frame, (768, 416)))
+        img.setTimestamp(monotonic())
+        img.setWidth(768)
+        img.setHeight(416)
         qIn.send(img)
 
-        trackFrame = trackerFrameQ.tryGet()
-        if trackFrame is None:
-            continue
+        inDet = qDet.tryGet()
 
-        track = tracklets.get()
-        manip = qManip.get()
-        inDet = qDet.get()
+        if inDet is not None:
+            detections = inDet.detections
 
-        counter+=1
-        current_time = time.monotonic()
-        if (current_time - startTime) > 1 :
-            fps = counter / (current_time - startTime)
-            counter = 0
-            startTime = current_time
-
-        detections = inDet.detections
-
-        color_palette_16 = [
-            (255, 105, 97),  # Salmon
-            (255, 179, 71),  # Orange
-            (255, 209, 102), # Yellow
-            (144, 238, 144), # Light Green
-            (102, 205, 170), # Medium Aquamarine
-            (100, 149, 237), # Cornflower Blue
-            (70, 130, 180),  # Steel Blue
-            (135, 206, 235), # Sky Blue
-            (106, 90, 205),  # Slate Blue
-            (123, 104, 238), # Medium Purple
-            (147, 112, 219), # Medium Purple
-            (219, 112, 147), # Pale Violet Red
-            (255, 20, 147),  # Deep Pink
-            (255, 105, 180), # Hot Pink
-            (255, 182, 193), # Light Pink
-            (255, 192, 203)  # Pink
-        ]
-        trackerFrame = trackFrame.getCvFrame()
-        tracker_frame_mask = np.zeros_like(trackerFrame, dtype=np.uint8)
-        trackletsData = track.tracklets
-        tracklets_to_draw = trackletsData
-        # tracklets_to_draw = []
-        
-        # for tracklet in trackletsData:
-        #     roi = tracklet.roi
-        #     x1 = roi.topLeft().x
-        #     y1 = roi.topLeft().y
-        #     x2 = roi.bottomRight().x
-        #     y2 = roi.bottomRight().y
-            
-        #     for i in range(len(tracklets_to_draw)):
-        #         other_tracklet = tracklets_to_draw[i]
-        #         other_roi = other_tracklet.roi
-        #         other_x1 = other_roi.topLeft().x
-        #         other_y1 = other_roi.topLeft().y
-        #         other_x2 = other_roi.bottomRight().x
-        #         other_y2 = other_roi.bottomRight().y
-                
-        #         if (x1 >= other_x1 and x1 <= other_x2) or (x2 >= other_x1 and x2 <= other_x2) or (other_x1 >= x1 and other_x1 <= x2) or (other_x2 >= x1 and other_x2 <= x2):
-        #             if (y1 >= other_y1 and y1 <= other_y2) or (y2 >= other_y1 and y2 <= other_y2) or (other_y1 >= y1 and other_y1 <= y2) or (other_y2 >= y1 and other_y2 <= y2):
-        #                 if tracklet.roi.area() > other_tracklet.roi.area():
-        #                     tracklets_to_draw[i] = tracklet
-        #                 break
-                
-        #     else:
-        #         tracklets_to_draw.append(tracklet)
-        
-        for tracklet in tracklets_to_draw:
-            roi = tracklet.roi.denormalize(trackerFrame.shape[1], trackerFrame.shape[0])
-            x1 = int(roi.topLeft().x)
-            y1 = int(roi.topLeft().y)
-            x2 = int(roi.bottomRight().x)
-            y2 = int(roi.bottomRight().y)
-
-            try:
-                label = labelMap[tracklet.label]
-            except:
-                label = tracklet.label
-
-            # cv2.putText(trackerFrame, f"ID: {[t.id]}", (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            # cv2.putText(trackerFrame, t.status.name, (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            
-            color = color_palette_16[tracklet.label]
-            addTransparentRectangle(color, x1, y1, x2, y2, trackerFrame, 0.3)
-            tracker_frame_mask[y1:y2, x1:x2] = 1
-            # addTransparentRectangle(color, x1, y1 - 10, x1 + 40, y1, trackerFrame, 0.3)
-            cv2.putText(trackerFrame, str(label), (x1, y1), cv2.FONT_HERSHEY_TRIPLEX, 0.3, (255, 255, 255))
-
-        cv2.imshow("tracker", trackerFrame)
+        if frame is not None:
+            frame = cv2.resize(frame, (1200, 700))
+            displayFrame("rgb", frame)
 
         if cv2.waitKey(1) == ord('q'):
             break
+        
+        end = time.time()
+        frame_time = end - start
+        if frame_time < target_frame_time:
+            time.sleep(target_frame_time - frame_time)
