@@ -15,12 +15,13 @@ import json
 import blobconverter
 import requests
 from time import monotonic
+from bytetrack.byte_tracker import BYTETracker
 
 # parse arguments
 parser = argparse.ArgumentParser()
 parser.add_argument("-m", "--model", help="Provide model name or model path for inference",
                     default='yolov7tiny_waldo_416x768', type=str)
-parser.add_argument("-v", "--video", help="Path to video file", default='pexels_street_1.mp4', type=str)
+parser.add_argument("-v", "--video", help="Path to video file", default='street_2_out.mp4', type=str)
 args = parser.parse_args()
 
 config_path = f"https://raw.githubusercontent.com/luxonis/depthai-model-zoo/main/models/{args.model}/config.json"
@@ -30,7 +31,7 @@ config = requests.get(config_path).text
 config = json.loads(config)
 
 config["nn_config"]["NN_specific_metadata"]["confidence_threshold"] = 0.3
-config["nn_config"]["NN_specific_metadata"]["iou_threshold"] = 0.2
+config["nn_config"]["NN_specific_metadata"]["iou_threshold"] = 0.1
 if "input_size" not in config["nn_config"]:
     config["nn_config"]["input_size"] = args.model.split("_")[-1]
 labelMap = config["mappings"]["labels"]
@@ -104,7 +105,7 @@ with dai.Device(pipeline) as device:
     qDet = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
 
     frame = None
-    detections = []
+    raw_detections = []
 
     startTime = time.monotonic()
     counter = 0
@@ -144,19 +145,36 @@ with dai.Device(pipeline) as device:
         res = cv2.addWeighted(tracker_slice, 1-alpha, colored_rectangle_numpy, alpha, 0, tracker_slice)
         trackerFrame[y1:y2, x1:x2] = res
         
-    def displayFrame(name, frame):
+    def displayFrameByteTracker(name, frame, tracker_output_for_each_class):
+        for C, detections in tracker_output_for_each_class.items():
+            for detection in detections:
+                bbox = frameNorm(frame, detection.tlbr)
+                cv2.putText(frame, labelMap[C], (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, (255, 255, 255))
+                # cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+                addTransparentRectangle(color_palette_16[C], bbox[0], bbox[1], bbox[2], bbox[3], frame, 0.5)
+            # Show the frame
+        cv2.imshow(name, frame)
+        
+    def displayFrame(name, frame, detections):
         for detection in detections:
             bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
-            cv2.putText(frame, labelMap[detection.label], (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 0), 2)
-        # Show the frame
+            # cv2.putText(frame, labelMap[detection.label], (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            # cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            addTransparentRectangle(color_palette_16[detection.label], bbox[0], bbox[1], bbox[2], bbox[3], frame, 0.5)
+        # Show the frames
         cv2.imshow(name, frame)
 
     cap = cv2.VideoCapture(args.video)
+    cap_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    cap_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    target_height = 1080
+    out_video_shape = (int(cap_w * target_height / cap_h), target_height)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out_video = cv2.VideoWriter(f'{args.video}_det.mp4', fourcc, 30.0, out_video_shape)
     frame_counter = 0
-    target_fps = 30
+    target_fps = 3
     target_frame_time = 1.0 / target_fps
+    tracker_for_each_class = {i: BYTETracker() for i in range(len(labelMap))}
     while cap.isOpened():
         start = time.time()
         read_correctly, frame = cap.read()
@@ -165,9 +183,9 @@ with dai.Device(pipeline) as device:
         
         frame_counter += 1
         #If the last frame is reached, reset the capture and the frame_counter
-        if frame_counter == cap.get(cv2.CAP_PROP_FRAME_COUNT):
-            frame_counter = 0 #Or whatever as long as it is the same as next line
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        # if frame_counter == cap.get(cv2.CAP_PROP_FRAME_COUNT):
+        #     frame_counter = 0 #Or whatever as long as it is the same as next line
+        #     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 
         img = dai.ImgFrame()
         img.setData(to_planar(frame, (768, 416)))
@@ -178,12 +196,24 @@ with dai.Device(pipeline) as device:
 
         inDet = qDet.tryGet()
 
+        tracker_output_for_each_class = {i: [] for i in range(len(labelMap))}
         if inDet is not None:
-            detections = inDet.detections
+            raw_detections = inDet.detections
+            detections_for_each_class = [[] for i in range(len(labelMap))]
+            for detection in raw_detections:
+                detections_for_each_class[detection.label].append(detection)
+            
+            for i, detections in enumerate(detections_for_each_class):
+                tracker = tracker_for_each_class[i]
+                matrix = np.array([[detection.xmin, detection.ymin, detection.xmax, detection.ymax, detection.confidence] for detection in detections])
+                matrix = matrix.reshape(-1, 5)
+                tracker_output_for_each_class[i] = tracker.update(matrix)
 
         if frame is not None:
-            frame = cv2.resize(frame, (1200, 700))
-            displayFrame("rgb", frame)
+            frame = cv2.resize(frame, out_video_shape)
+            # displayFrame("rgb", frame, raw_detections)
+            displayFrameByteTracker("rgb", frame, tracker_output_for_each_class)
+            out_video.write(frame)
 
         if cv2.waitKey(1) == ord('q'):
             break
@@ -192,3 +222,6 @@ with dai.Device(pipeline) as device:
         frame_time = end - start
         if frame_time < target_frame_time:
             time.sleep(target_frame_time - frame_time)
+
+out_video.release()
+cv2.destroyAllWindows()

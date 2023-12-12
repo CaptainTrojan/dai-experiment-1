@@ -10,6 +10,14 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "object detection",
+            "type": "python",
+            "request": "launch",
+            "program": "object_detection.py",
+            "console": "integratedTerminal",
             "justMyCode": true
         }
     ]

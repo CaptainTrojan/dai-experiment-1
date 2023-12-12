@@ -1,0 +1,13 @@
+blobconverter==1.4.2
+cython_bbox==0.1.5
+depthai==2.16.0.0
+filterpy==1.4.5
+lap==0.4.0
+matplotlib==3.8.2
+numpy==1.26.2
+opencv_contrib_python==4.8.1.78
+opencv_python==4.8.1.78
+Requests==2.31.0
+scipy==1.11.4
+torch==2.1.1
+yolox==0.3.0
