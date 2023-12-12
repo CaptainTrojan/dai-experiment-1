@@ -16,12 +16,13 @@ import blobconverter
 import requests
 from time import monotonic
 from bytetrack.byte_tracker import BYTETracker
+from tqdm import tqdm
 
 # parse arguments
 parser = argparse.ArgumentParser()
 parser.add_argument("-m", "--model", help="Provide model name or model path for inference",
                     default='yolov7tiny_waldo_416x768', type=str)
-parser.add_argument("-v", "--video", help="Path to video file", default='street_2_out.mp4', type=str)
+parser.add_argument("-v", "--video", help="Path to video file", default='../data/pexels_street_2.mp4', type=str)
 args = parser.parse_args()
 
 config_path = f"https://raw.githubusercontent.com/luxonis/depthai-model-zoo/main/models/{args.model}/config.json"
@@ -64,7 +65,7 @@ labels = nnMappings.get("labels", {})
 nnPath = args.model
 if not Path(nnPath).exists():
     print("No blob found at {}. Looking into DepthAI model zoo.".format(nnPath))
-    nnPath = str(blobconverter.from_zoo(args.model, shaves = 7, zoo_type = "depthai", use_cache=True))
+    nnPath = str(blobconverter.from_zoo(args.model, shaves = 8, zoo_type = "depthai", use_cache=True))
 # sync outputs
 syncNN = True
 
@@ -144,7 +145,31 @@ with dai.Device(pipeline) as device:
         colored_rectangle_numpy[:] = color
         res = cv2.addWeighted(tracker_slice, 1-alpha, colored_rectangle_numpy, alpha, 0, tracker_slice)
         trackerFrame[y1:y2, x1:x2] = res
-        
+
+    def draw_detection(frame, detection):
+        bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
+
+        # add background rectangle for text according to label size
+        label_size = cv2.getTextSize(labelMap[detection.label], cv2.FONT_HERSHEY_TRIPLEX, font_scaling_factor, 1)[0]
+        addTransparentRectangle(color_palette_16[detection.label], bbox[0], bbox[1] - label_size[1] - 7, bbox[0] + label_size[0], bbox[1], frame, 0.6)
+        cv2.putText(frame, labelMap[detection.label], (bbox[0], bbox[1] - 7), cv2.FONT_HERSHEY_TRIPLEX, font_scaling_factor, (255, 255, 255), lineType=cv2.LINE_AA)
+        # cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+
+        # Define the points for the corners
+        corner_size = 7  # size of the corner sides
+        corners = [
+            [(bbox[0] + corner_size, bbox[1]), (bbox[0], bbox[1]), (bbox[0], bbox[1] + corner_size)],
+            [(bbox[2] - corner_size, bbox[1]), (bbox[2], bbox[1]), (bbox[2], bbox[1] + corner_size)],
+            [(bbox[2], bbox[3] - corner_size), (bbox[2], bbox[3]), (bbox[2] - corner_size, bbox[3])],
+            [(bbox[0], bbox[3] - corner_size), (bbox[0], bbox[3]), (bbox[0] + corner_size, bbox[3])]
+        ]
+
+        # Draw the corner lines
+        for corner in corners:
+            cv2.polylines(frame, [np.array(corner)], False, color_palette_16[detection.label], thickness=2, lineType=cv2.LINE_AA)
+
+        addTransparentRectangle(color_palette_16[detection.label], bbox[0], bbox[1], bbox[2], bbox[3], frame, 0.3)
+
     def displayFrameByteTracker(name, frame, tracker_output_for_each_class):
         for C, detections in tracker_output_for_each_class.items():
             for detection in detections:
@@ -155,26 +180,34 @@ with dai.Device(pipeline) as device:
             # Show the frame
         cv2.imshow(name, frame)
         
-    def displayFrame(name, frame, detections):
+    def displayFrame(name, frame, detections, render):
         for detection in detections:
-            bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
-            # cv2.putText(frame, labelMap[detection.label], (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            # cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            addTransparentRectangle(color_palette_16[detection.label], bbox[0], bbox[1], bbox[2], bbox[3], frame, 0.5)
+            draw_detection(frame, detection)
         # Show the frames
-        cv2.imshow(name, frame)
+        if render:
+            cv2.imshow(name, frame)
 
     cap = cv2.VideoCapture(args.video)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Failed to open video file: {args.video} from directory: {Path.cwd()}")
+
     cap_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
     cap_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    target_height = 1080
-    out_video_shape = (int(cap_w * target_height / cap_h), target_height)
+    out_video_shape = (int(cap_w), int(cap_h))
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out_video = cv2.VideoWriter(f'{args.video}_det.mp4', fourcc, 30.0, out_video_shape)
     frame_counter = 0
-    target_fps = 3
+    target_fps = 30
+    font_scaling_factor = out_video_shape[0] / 2400
+
+    frame_buffer_size = max(target_fps // 6, 1)
+    frame_buffer = [None] * frame_buffer_size
+
     target_frame_time = 1.0 / target_fps
     tracker_for_each_class = {i: BYTETracker() for i in range(len(labelMap))}
+
+    # progress bar 
+    pbar = tqdm(total=cap.get(cv2.CAP_PROP_FRAME_COUNT), desc=f"Rendering {args.video}")
     while cap.isOpened():
         start = time.time()
         read_correctly, frame = cap.read()
@@ -194,6 +227,10 @@ with dai.Device(pipeline) as device:
         img.setHeight(416)
         qIn.send(img)
 
+        # insert newest frame
+        frame_buffer.append(frame)
+        del frame_buffer[0]
+
         inDet = qDet.tryGet()
 
         tracker_output_for_each_class = {i: [] for i in range(len(labelMap))}
@@ -209,10 +246,12 @@ with dai.Device(pipeline) as device:
                 matrix = matrix.reshape(-1, 5)
                 tracker_output_for_each_class[i] = tracker.update(matrix)
 
+        # display oldest frame in the buffer
+        frame = frame_buffer[0]
         if frame is not None:
             frame = cv2.resize(frame, out_video_shape)
-            # displayFrame("rgb", frame, raw_detections)
-            displayFrameByteTracker("rgb", frame, tracker_output_for_each_class)
+            displayFrame("rgb", frame, raw_detections, render=False)
+            # displayFrameByteTracker("rgb", frame, tracker_output_for_each_class)
             out_video.write(frame)
 
         if cv2.waitKey(1) == ord('q'):
@@ -222,6 +261,8 @@ with dai.Device(pipeline) as device:
         frame_time = end - start
         if frame_time < target_frame_time:
             time.sleep(target_frame_time - frame_time)
+
+        pbar.update(1)
 
 out_video.release()
 cv2.destroyAllWindows()
