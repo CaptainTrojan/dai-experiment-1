@@ -68,7 +68,7 @@ class STrack(BaseTrack):
             self.track_id = self.next_id()
         self.score = new_track.score
 
-    def update(self, new_track, frame_id):
+    def update(self, new_track, frame_id, decay_factor):
         """
         Update a matched track
         :type new_track: STrack
@@ -80,6 +80,10 @@ class STrack(BaseTrack):
         self.tracklet_len += 1
 
         new_tlwh = new_track.tlwh
+        
+        if decay_factor < 1.0:
+            new_tlwh = (decay_factor) * self.tlwh + (1-decay_factor) * new_tlwh
+        
         self.mean, self.covariance = self.kalman_filter.update(
             self.mean, self.covariance, self.tlwh_to_xyah(new_tlwh))
         self.state = TrackState.Tracked
@@ -153,6 +157,7 @@ class BYTETracker(object):
         self.track_thresh = 0.1
         self.track_buffer = 500
         self.match_thresh = 0.5
+        self.decay_factor = 0.7
         
         #self.det_thresh = args.track_thresh
         self.det_thresh = self.track_thresh + 0.1
@@ -208,7 +213,7 @@ class BYTETracker(object):
             track = strack_pool[itracked]
             det = detections[idet]
             if track.state == TrackState.Tracked:
-                track.update(detections[idet], self.frame_id)
+                track.update(detections[idet], self.frame_id, self.decay_factor)
                 activated_starcks.append(track)
             else:
                 track.re_activate(det, self.frame_id, new_id=False)
@@ -247,7 +252,7 @@ class BYTETracker(object):
         dists = matching.fuse_score(dists, detections)
         matches, u_unconfirmed, u_detection = matching.linear_assignment(dists, thresh=0.7)
         for itracked, idet in matches:
-            unconfirmed[itracked].update(detections[idet], self.frame_id)
+            unconfirmed[itracked].update(detections[idet], self.frame_id, self.decay_factor)
             activated_starcks.append(unconfirmed[itracked])
         for it in u_unconfirmed:
             track = unconfirmed[it]

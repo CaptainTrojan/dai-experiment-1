@@ -16,9 +16,10 @@
             "name": "object detection",
             "type": "python",
             "request": "launch",
-            "program": "object_detection.py",
+            "program": "object_detection\\object_detection.py",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": false,
+            "args": ["-v", "D:\\pexels_crossroad_4.mp4", "-r"]
         }
     ]
 }

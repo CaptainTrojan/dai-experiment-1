@@ -22,7 +22,8 @@ from tqdm import tqdm
 parser = argparse.ArgumentParser()
 parser.add_argument("-m", "--model", help="Provide model name or model path for inference",
                     default='yolov7tiny_waldo_416x768', type=str)
-parser.add_argument("-v", "--video", help="Path to video file", default='../data/pexels_street_2.mp4', type=str)
+parser.add_argument("-v", "--video", help="Path to video file", default='D:\\pexels_crossroad_4.mp4', type=str)
+parser.add_argument("-r", "--render", action='store_true', help="Render video")
 args = parser.parse_args()
 
 config_path = f"https://raw.githubusercontent.com/luxonis/depthai-model-zoo/main/models/{args.model}/config.json"
@@ -107,6 +108,7 @@ with dai.Device(pipeline) as device:
 
     frame = None
     raw_detections = []
+    target_labels = {0, 1, 2, 10}
 
     startTime = time.monotonic()
     counter = 0
@@ -145,14 +147,45 @@ with dai.Device(pipeline) as device:
         colored_rectangle_numpy[:] = color
         res = cv2.addWeighted(tracker_slice, 1-alpha, colored_rectangle_numpy, alpha, 0, tracker_slice)
         trackerFrame[y1:y2, x1:x2] = res
+        
+    def addTransparentCircle(color, x, y, r, trackerFrame, alpha):
+        ex_r = r + 5
+        overlay = trackerFrame[y-ex_r:y+ex_r, x-ex_r:x+ex_r].copy()
+        if overlay.shape[0] != 2*ex_r or overlay.shape[1] != 2*ex_r:
+            return
+        cv2.circle(overlay, (ex_r, ex_r), r, color, -1, lineType=cv2.LINE_AA)
+        cv2.circle(overlay, (ex_r, ex_r), r, (color[0] * 0.8, color[1] * 0.8, color[2] * 0.8), 2, lineType=cv2.LINE_AA)
+        trackerFrame[y-ex_r:y+ex_r, x-ex_r:x+ex_r] = cv2.addWeighted(overlay, 1-alpha, trackerFrame[y-ex_r:y+ex_r, x-ex_r:x+ex_r], alpha, 0)
 
-    def draw_detection(frame, detection):
-        bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
+    def circle_XYR_from_TLBR(x1, y1, x2, y2):
+        if x2 - x1 > y2 - y1:
+            r = (y2 - y1) // 2
+        else:
+            r = (x2 - x1) // 2
+        return int((x1 + x2) / 2), int((y1 + y2) / 2), r
+
+    def draw_detection(frame, x1, y1, x2, y2, label):
+        if label not in target_labels:
+            return
+        bbox = frameNorm(frame, (x1, y1, x2, y2))
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        growth_factor = 1.1
+        bbox[0] = bbox[0] - int((growth_factor - 1) * width / 2)
+        bbox[1] = bbox[1] - int((growth_factor - 1) * height / 2)
+        bbox[2] = bbox[2] + int((growth_factor - 1) * width / 2)
+        bbox[3] = bbox[3] + int((growth_factor - 1) * height / 2)
+        
+        # ensure bbox is within frame
+        bbox[0] = max(0, bbox[0])
+        bbox[1] = max(0, bbox[1])
+        bbox[2] = min(frame.shape[1], bbox[2])
+        bbox[3] = min(frame.shape[0], bbox[3])
 
         # add background rectangle for text according to label size
-        label_size = cv2.getTextSize(labelMap[detection.label], cv2.FONT_HERSHEY_TRIPLEX, font_scaling_factor, 1)[0]
-        addTransparentRectangle(color_palette_16[detection.label], bbox[0], bbox[1] - label_size[1] - 7, bbox[0] + label_size[0], bbox[1], frame, 0.6)
-        cv2.putText(frame, labelMap[detection.label], (bbox[0], bbox[1] - 7), cv2.FONT_HERSHEY_TRIPLEX, font_scaling_factor, (255, 255, 255), lineType=cv2.LINE_AA)
+        label_size = cv2.getTextSize(labelMap[label], cv2.FONT_HERSHEY_TRIPLEX, font_scaling_factor, 1)[0]
+        addTransparentRectangle(color_palette_16[label], bbox[0], bbox[1] - label_size[1] - 7, bbox[0] + label_size[0], bbox[1], frame, 0.6)
+        cv2.putText(frame, labelMap[label], (bbox[0], bbox[1] - 7), cv2.FONT_HERSHEY_TRIPLEX, font_scaling_factor, (255, 255, 255), lineType=cv2.LINE_AA)
         # cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
 
         # Define the points for the corners
@@ -163,26 +196,30 @@ with dai.Device(pipeline) as device:
             [(bbox[2], bbox[3] - corner_size), (bbox[2], bbox[3]), (bbox[2] - corner_size, bbox[3])],
             [(bbox[0], bbox[3] - corner_size), (bbox[0], bbox[3]), (bbox[0] + corner_size, bbox[3])]
         ]
+        
+        # print(f"  {bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}")
 
         # Draw the corner lines
         for corner in corners:
-            cv2.polylines(frame, [np.array(corner)], False, color_palette_16[detection.label], thickness=2, lineType=cv2.LINE_AA)
+            cv2.polylines(frame, [np.array(corner)], False, color_palette_16[label], thickness=2, lineType=cv2.LINE_AA)
 
-        addTransparentRectangle(color_palette_16[detection.label], bbox[0], bbox[1], bbox[2], bbox[3], frame, 0.3)
+        addTransparentRectangle(color_palette_16[label], bbox[0], bbox[1], bbox[2], bbox[3], frame, 0.3)
 
-    def displayFrameByteTracker(name, frame, tracker_output_for_each_class):
+        # x, y, r = circle_XYR_from_TLBR(bbox[0], bbox[1], bbox[2], bbox[3])
+        # addTransparentCircle(color_palette_16[detection.label], x, y, r, frame, 0.3)
+
+    def displayFrameByteTracker(name, frame, tracker_output_for_each_class, render):
         for C, detections in tracker_output_for_each_class.items():
             for detection in detections:
-                bbox = frameNorm(frame, detection.tlbr)
-                cv2.putText(frame, labelMap[C], (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, (255, 255, 255))
-                # cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-                addTransparentRectangle(color_palette_16[C], bbox[0], bbox[1], bbox[2], bbox[3], frame, 0.5)
-            # Show the frame
-        cv2.imshow(name, frame)
+                x1, y1, x2, y2 = detection.tlbr
+                # print(f"  {x1}, {y1}, {x2}, {y2}")
+                draw_detection(frame, x1, y1, x2, y2, C)
+        if render:
+            cv2.imshow(name, frame)
         
     def displayFrame(name, frame, detections, render):
         for detection in detections:
-            draw_detection(frame, detection)
+            draw_detection(frame, detection.xmin, detection.ymin, detection.xmax, detection.ymax, detection.label)
         # Show the frames
         if render:
             cv2.imshow(name, frame)
@@ -197,14 +234,15 @@ with dai.Device(pipeline) as device:
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out_video = cv2.VideoWriter(f'{args.video}_det.mp4', fourcc, 30.0, out_video_shape)
     frame_counter = 0
-    target_fps = 30
+    target_fps = 10
     font_scaling_factor = out_video_shape[0] / 2400
 
-    frame_buffer_size = max(target_fps // 6, 1)
+    frame_buffer_size = max(target_fps // 3, 1)
     frame_buffer = [None] * frame_buffer_size
 
     target_frame_time = 1.0 / target_fps
     tracker_for_each_class = {i: BYTETracker() for i in range(len(labelMap))}
+    tracker_output_for_each_class = {i: [] for i in range(len(labelMap))}
 
     # progress bar 
     pbar = tqdm(total=cap.get(cv2.CAP_PROP_FRAME_COUNT), desc=f"Rendering {args.video}")
@@ -233,12 +271,12 @@ with dai.Device(pipeline) as device:
 
         inDet = qDet.tryGet()
 
-        tracker_output_for_each_class = {i: [] for i in range(len(labelMap))}
         if inDet is not None:
             raw_detections = inDet.detections
             detections_for_each_class = [[] for i in range(len(labelMap))]
             for detection in raw_detections:
-                detections_for_each_class[detection.label].append(detection)
+                if detection.label in target_labels:
+                    detections_for_each_class[detection.label].append(detection)
             
             for i, detections in enumerate(detections_for_each_class):
                 tracker = tracker_for_each_class[i]
@@ -250,8 +288,8 @@ with dai.Device(pipeline) as device:
         frame = frame_buffer[0]
         if frame is not None:
             frame = cv2.resize(frame, out_video_shape)
-            displayFrame("rgb", frame, raw_detections, render=False)
-            # displayFrameByteTracker("rgb", frame, tracker_output_for_each_class)
+            # displayFrame("rgb", frame, raw_detections, render=args.render)
+            displayFrameByteTracker("rgb", frame, tracker_output_for_each_class, render=args.render)
             out_video.write(frame)
 
         if cv2.waitKey(1) == ord('q'):
