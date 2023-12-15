@@ -113,8 +113,9 @@ with dai.Device(pipeline) as device:
     startTime = time.monotonic()
     counter = 0
     fps = 0
+    
     color_palette_16 = [
-        (255, 105, 97),  # Salmon
+        (255, 155, 137),  # Salmon
         (255, 179, 71),  # Orange
         (255, 209, 102), # Yellow
         (144, 238, 144), # Light Green
@@ -183,13 +184,13 @@ with dai.Device(pipeline) as device:
         bbox[3] = min(frame.shape[0], bbox[3])
 
         # add background rectangle for text according to label size
-        label_size = cv2.getTextSize(labelMap[label], cv2.FONT_HERSHEY_TRIPLEX, font_scaling_factor, 1)[0]
-        addTransparentRectangle(color_palette_16[label], bbox[0], bbox[1] - label_size[1] - 7, bbox[0] + label_size[0], bbox[1], frame, 0.6)
-        cv2.putText(frame, labelMap[label], (bbox[0], bbox[1] - 7), cv2.FONT_HERSHEY_TRIPLEX, font_scaling_factor, (255, 255, 255), lineType=cv2.LINE_AA)
+        # label_size = cv2.getTextSize(labelMap[label], cv2.FONT_HERSHEY_TRIPLEX, font_scaling_factor, 1)[0]
+        # addTransparentRectangle(color_palette_16[label], bbox[0], bbox[1] - label_size[1] - 7, bbox[0] + label_size[0], bbox[1], frame, 0.6)
+        # cv2.putText(frame, labelMap[label], (bbox[0], bbox[1] - 7), cv2.FONT_HERSHEY_TRIPLEX, font_scaling_factor, (255, 255, 255), lineType=cv2.LINE_AA)
         # cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
 
         # Define the points for the corners
-        corner_size = 7  # size of the corner sides
+        corner_size = 15  # size of the corner sides
         corners = [
             [(bbox[0] + corner_size, bbox[1]), (bbox[0], bbox[1]), (bbox[0], bbox[1] + corner_size)],
             [(bbox[2] - corner_size, bbox[1]), (bbox[2], bbox[1]), (bbox[2], bbox[1] + corner_size)],
@@ -200,8 +201,10 @@ with dai.Device(pipeline) as device:
         # print(f"  {bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}")
 
         # Draw the corner lines
+        darkening = 1.0
+        slightly_darker_color = (color_palette_16[label][0] * darkening, color_palette_16[label][1] * darkening, color_palette_16[label][2] * darkening)
         for corner in corners:
-            cv2.polylines(frame, [np.array(corner)], False, color_palette_16[label], thickness=2, lineType=cv2.LINE_AA)
+            cv2.polylines(frame, [np.array(corner)], False, slightly_darker_color, thickness=int(5 * font_scaling_factor), lineType=cv2.LINE_AA)
 
         addTransparentRectangle(color_palette_16[label], bbox[0], bbox[1], bbox[2], bbox[3], frame, 0.3)
 
