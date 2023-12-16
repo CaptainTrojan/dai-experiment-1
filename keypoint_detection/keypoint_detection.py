@@ -57,10 +57,12 @@ def decode_thread(in_queue):
     global keypoints_list, detected_keypoints, personwiseKeypoints
 
     while running:
-        try:
-            raw_in = in_queue.get()
-        except RuntimeError:
-            return
+        raw_in = in_queue.tryGet()
+        if raw_in is None:
+            continue
+        
+        # print("stuff coming in")
+        
         heatmaps = np.array(raw_in.getLayerFp16('Mconv7_stage2_L2')).reshape((1, 19, 32, 57))
         pafs = np.array(raw_in.getLayerFp16('Mconv7_stage2_L1')).reshape((1, 38, 32, 57))
         heatmaps = heatmaps.astype('float32')
@@ -93,7 +95,7 @@ def decode_thread(in_queue):
 parser = argparse.ArgumentParser()
 parser.add_argument("-m", "--model", help="Provide model name or model path for inference",
                     default='human-pose-estimation-0001', type=str)
-parser.add_argument("-v", "--video", help="Path to video file", default='keypoint_detection/pexels_walk_1.mp4', type=str)
+parser.add_argument("-v", "--video", help="Path to video file", default='keypoint_detection/pexels_walk_2.mp4', type=str)
 args = parser.parse_args()
 
 nnpath = str(blobconverter.from_zoo(args.model, shaves = 8, use_cache=True))
@@ -130,6 +132,8 @@ with dai.Device(pipeline) as device:
     t = threading.Thread(target=decode_thread, args=(qDet,))
     t.start()
     
+    target_fps = 30
+    target_frame_time = 1 / target_fps
     cap = cv2.VideoCapture(args.video)
     frame_counter = 0
     while cap.isOpened():
@@ -150,11 +154,15 @@ with dai.Device(pipeline) as device:
         img.setWidth(W)
         img.setHeight(H)
         qIn.send(img)
-
-        inDet = qDet.tryGet()
-        if inDet is not None:
-            print(inDet)
-            
+        
         show(frame)
-
-t.join()
+        cv2.imshow("frame", frame)
+        
+        if cv2.waitKey(1) == ord('q'):
+            running = False
+            t.join()
+            break
+        
+        end = time.time()
+        if end - start < target_frame_time:
+            time.sleep(target_frame_time - (end - start))
