@@ -42,19 +42,30 @@ def draw_keypoints(frame):
         detected_keypoints = keypoint_smoother.smooth_keypoints(detected_keypoints)
         vertices, edges = keypoint_graph.generate_continuous_graph(detected_keypoints)
         
-        for vertex, color in vertices:
-            kp = detected_keypoints[vertex]
-            cv2.circle(frame, scale(kp[0:2]), 5, color, -1, cv2.LINE_AA)
-            
+        try:
+            pose_height = max(detected_keypoints, key=lambda x: x[1] if x is not None else 0)[1] - \
+                        min(detected_keypoints, key=lambda x: x[1] if x is not None else 1e8)[1]
+        except TypeError:
+            pose_height = 100
+                      
+        # pose_height = max(min(pose_height, 10), 5)
+        # print(pose_height)
+        line_width = int(3.5 * thickness_scalar * pose_height / 100)
+        
         for edge_a, edge_b, color in edges:
             kp_a = detected_keypoints[edge_a]
             kp_b = detected_keypoints[edge_b]
-            cv2.line(frame, scale(kp_a[0:2]), scale(kp_b[0:2]), color, 3, cv2.LINE_AA)
+            cv2.line(frame, scale(kp_a[0:2]), scale(kp_b[0:2]), color, line_width, cv2.LINE_AA)
+        
+        circle_size = int(7 * thickness_scalar * pose_height / 100)
+        for vertex, color in vertices:
+            kp = detected_keypoints[vertex]
+            cv2.circle(frame, scale(kp[0:2]), circle_size, color, -1, cv2.LINE_AA)
+            
+        # print(pose_height, line_width, circle_size)
 
 
 def decode_thread(in_queue):
-    global detected_keypoints
-
     while running:
         try:
             raw_in = in_queue.tryGet()
@@ -65,25 +76,30 @@ def decode_thread(in_queue):
         
         # print("stuff coming in")
         
-        heatmaps = np.array(raw_in.getLayerFp16('Mconv7_stage2_L2')).reshape((1, 19, 32, 57))
-        pafs = np.array(raw_in.getLayerFp16('Mconv7_stage2_L1')).reshape((1, 38, 32, 57))
-        heatmaps = heatmaps.astype('float32')
-        pafs = pafs.astype('float32')
-        outputs = np.concatenate((heatmaps, pafs), axis=1)
+        parse_nn_input(raw_in)
 
-        new_keypoints = []
+def parse_nn_input(raw_in):
+    global detected_keypoints
 
-        for row in range(18):
-            probMap = outputs[0, row, :, :]
-            probMap = cv2.resize(probMap, (W, H))  # (456, 256)
-            keypoints = getKeypoints(probMap, 0.3)
+    heatmaps = np.array(raw_in.getLayerFp16('Mconv7_stage2_L2')).reshape((1, 19, 32, 57))
+    pafs = np.array(raw_in.getLayerFp16('Mconv7_stage2_L1')).reshape((1, 38, 32, 57))
+    heatmaps = heatmaps.astype('float32')
+    pafs = pafs.astype('float32')
+    outputs = np.concatenate((heatmaps, pafs), axis=1)
 
-            if len(keypoints) > 0:
-                new_keypoints.append(keypoints[0])
-            else:
-                new_keypoints.append(None)
+    new_keypoints = []
 
-        detected_keypoints = new_keypoints
+    for row in range(18):
+        probMap = outputs[0, row, :, :]
+        probMap = cv2.resize(probMap, (W, H))  # (456, 256)
+        keypoints = getKeypoints(probMap, 0.3)
+
+        if len(keypoints) > 0:
+            new_keypoints.append(keypoints[0])
+        else:
+            new_keypoints.append(None)
+
+    detected_keypoints = new_keypoints
 
 # parse arguments
 parser = argparse.ArgumentParser()
@@ -126,10 +142,10 @@ with dai.Device(pipeline) as device:
     # Input queue will be used to send video frames to the device.
     qIn = device.getInputQueue(name="inFrame")
     # Output queue will be used to get nn data from the video frames.
-    qDet = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
+    qDet = device.getOutputQueue(name="nn", maxSize=4, blocking=True)
     
-    t = threading.Thread(target=decode_thread, args=(qDet,))
-    t.start()
+    # t = threading.Thread(target=decode_thread, args=(qDet,))
+    # t.start()
     
     target_fps = 30
     target_frame_time = 1 / target_fps
@@ -144,15 +160,16 @@ with dai.Device(pipeline) as device:
     out_video = cv2.VideoWriter(f'{args.video}_det.mp4', fourcc, 30.0, out_video_shape)
     frame_counter = 0
     
-    frame_delay = 5
+    frame_delay = 1
     frame_buffer = [None] * frame_delay
     Wr = int(cap_w * (H / cap_h))
-    if Wr < W:
+    if Wr > W:
         Wr = W
-    left_pad = (Wr - W) // 2
-    right_pad = Wr - W - left_pad
+    left_pad = (W - Wr) // 2
+    right_pad = W - Wr - left_pad
     preview_height = 700
     preview_width = int(cap_w * (preview_height / cap_h))
+    thickness_scalar = cap_h / 1000
         
     pbar = tqdm(total=cap.get(cv2.CAP_PROP_FRAME_COUNT), desc=f"Rendering {args.video}")
     while cap.isOpened():
@@ -178,6 +195,8 @@ with dai.Device(pipeline) as device:
         img.setHeight(H)
         qIn.send(img)
         
+        parse_nn_input(qDet.get())
+        
         frame = frame_buffer[0]
                 
         if frame is not None:
@@ -192,7 +211,7 @@ with dai.Device(pipeline) as device:
         
         if cv2.waitKey(1) == ord('q'):
             running = False
-            t.join()
+            # t.join()
             break
         
         end = time.time()
@@ -202,4 +221,4 @@ with dai.Device(pipeline) as device:
         pbar.update(1)
     
 out_video.release()
-t.join()
+# t.join()
