@@ -67,7 +67,7 @@ class KeypointGraph:
     ] 
     
     edge_colors = [
-        CP[0], CP[0], 
+        CP[1], CP[2], 
         CP[1], CP[1],
         CP[2], CP[2],
         CP[3], CP[3], CP[3],
@@ -81,7 +81,6 @@ class KeypointGraph:
         k: v for k, v in zip(POSE_PAIRS, edge_colors)
     }
 
-    
     @staticmethod
     def generate_continuous_graph(keypoints):
         list_of_neighbors = KeypointGraph.build_full_graph(keypoints)
