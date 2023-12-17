@@ -28,7 +28,7 @@
             "program": "keypoint_detection\\keypoint_detection.py",
             "console": "integratedTerminal",
             "justMyCode": false,
-            "args": ["-v", "D:\\pexels_walk_1.mp4", "-r"]
+            "args": ["-v", "D:\\pexels_walk_4.mp4", "-r"]
         }
     ]
 }
