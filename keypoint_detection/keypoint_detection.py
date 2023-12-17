@@ -17,6 +17,7 @@ import requests
 from time import monotonic
 from pose import getKeypoints, getValidPairs, getPersonwiseKeypoints
 import threading
+from tqdm import tqdm
 
 W, H = (456, 256)
 running = True
@@ -30,7 +31,7 @@ colors = [[0, 100, 255], [0, 100, 255], [0, 255, 255], [0, 100, 255], [0, 255, 2
 POSE_PAIRS = [[1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13],
               [1, 0], [0, 14], [14, 16], [0, 15], [15, 17], [2, 17], [5, 16]]
 
-def show(frame):
+def draw_keypoints(frame):
     global keypoints_list, detected_keypoints, personwiseKeypoints
 
     if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
@@ -57,7 +58,10 @@ def decode_thread(in_queue):
     global keypoints_list, detected_keypoints, personwiseKeypoints
 
     while running:
-        raw_in = in_queue.tryGet()
+        try:
+            raw_in = in_queue.tryGet()
+        except RuntimeError:
+            return
         if raw_in is None:
             continue
         
@@ -95,7 +99,9 @@ def decode_thread(in_queue):
 parser = argparse.ArgumentParser()
 parser.add_argument("-m", "--model", help="Provide model name or model path for inference",
                     default='human-pose-estimation-0001', type=str)
-parser.add_argument("-v", "--video", help="Path to video file", default='keypoint_detection/pexels_walk_2.mp4', type=str)
+parser.add_argument("-v", "--video", help="Path to video file", default='keypoint_detection/pexels_walk_4.mp4', type=str)
+parser.add_argument("-r", "--render", help="Render output video", action='store_true')
+
 args = parser.parse_args()
 
 nnpath = str(blobconverter.from_zoo(args.model, shaves = 8, use_cache=True))
@@ -124,6 +130,9 @@ with dai.Device(pipeline) as device:
     def to_planar(arr: np.ndarray, shape: tuple) -> np.ndarray:
         return cv2.resize(arr, shape).transpose(2, 0, 1).flatten()
     
+    def to_planar_no_reshape(arr: np.ndarray) -> np.ndarray:
+        return arr.transpose(2, 0, 1).flatten()
+    
     # Input queue will be used to send video frames to the device.
     qIn = device.getInputQueue(name="inFrame")
     # Output queue will be used to get nn data from the video frames.
@@ -135,28 +144,61 @@ with dai.Device(pipeline) as device:
     target_fps = 30
     target_frame_time = 1 / target_fps
     cap = cv2.VideoCapture(args.video)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Failed to open video file: {args.video} from directory: {Path.cwd()}")
+
+    cap_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    cap_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    out_video_shape = (int(cap_w), int(cap_h))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out_video = cv2.VideoWriter(f'{args.video}_det.mp4', fourcc, 30.0, out_video_shape)
     frame_counter = 0
+    
+    frame_delay = 5
+    frame_buffer = [None] * frame_delay
+    Wr = int(cap_w * (H / cap_h))
+    if Wr < W:
+        Wr = W
+    left_pad = (Wr - W) // 2
+    right_pad = Wr - W - left_pad
+    preview_height = 700
+    preview_width = int(cap_w * (preview_height / cap_h))
+        
+    pbar = tqdm(total=cap.get(cv2.CAP_PROP_FRAME_COUNT), desc=f"Rendering {args.video}")
     while cap.isOpened():
         start = time.time()
-        read_correctly, frame = cap.read()
+        read_correctly, og_frame = cap.read()
         if not read_correctly:
             break
-        
         frame_counter += 1
-        #If the last frame is reached, reset the capture and the frame_counter
-        # if frame_counter == cap.get(cv2.CAP_PROP_FRAME_COUNT):
-        #     frame_counter = 0 #Or whatever as long as it is the same as next line
-        #     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                
-        img = dai.ImgFrame()
-        img.setData(to_planar(frame, (W, H)))
+        
+        frame_buffer.append(og_frame)
+        del frame_buffer[0]
+        
+        # resize frame
+        frame = cv2.resize(og_frame, (Wr, H))
+        
+        # pad frame left and right area to match target aspect ratio
+        frame = cv2.copyMakeBorder(frame, 0, 0, left_pad, right_pad, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+        
+        img = dai.ImgFrame()    
+        img.setData(to_planar_no_reshape(frame))
         img.setTimestamp(monotonic())
         img.setWidth(W)
         img.setHeight(H)
         qIn.send(img)
         
-        show(frame)
-        cv2.imshow("frame", frame)
+        frame = frame_buffer[0]
+                
+        if frame is not None:
+            draw_keypoints(frame)
+            # remove padding from frame
+            # frame = frame[:, pad_W:-pad_W]
+            
+            out_video.write(frame)
+            if args.render:
+                preview_frame = cv2.resize(frame, (preview_width, preview_height))
+                cv2.imshow("frame", preview_frame)
         
         if cv2.waitKey(1) == ord('q'):
             running = False
@@ -166,3 +208,8 @@ with dai.Device(pipeline) as device:
         end = time.time()
         if end - start < target_frame_time:
             time.sleep(target_frame_time - (end - start))
+            
+        pbar.update(1)
+    
+out_video.release()
+t.join()

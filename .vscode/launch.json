@@ -20,6 +20,15 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "args": ["-v", "D:\\pexels_crossroad_4.mp4", "-r"]
+        },
+        {
+            "name": "keypoint detection",
+            "type": "python",
+            "request": "launch",
+            "program": "keypoint_detection\\keypoint_detection.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": ["-v", "D:\\pexels_walk_1.mp4", "-r"]
         }
     ]
 }
