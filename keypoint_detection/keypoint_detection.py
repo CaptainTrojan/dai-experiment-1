@@ -18,44 +18,42 @@ from time import monotonic
 from pose import getKeypoints, getValidPairs, getPersonwiseKeypoints
 import threading
 from tqdm import tqdm
+from utils import KeypointSmoother, KeypointGraph
 
 W, H = (456, 256)
 running = True
 pose = None
-keypoints_list = None
 detected_keypoints = None
-personwiseKeypoints = None
-colors = [[0, 100, 255], [0, 100, 255], [0, 255, 255], [0, 100, 255], [0, 255, 255], [0, 100, 255], [0, 255, 0],
-          [255, 200, 100], [255, 0, 255], [0, 255, 0], [255, 200, 100], [255, 0, 255], [0, 0, 255], [255, 0, 0],
-          [200, 200, 0], [255, 0, 0], [200, 200, 0], [0, 0, 0]]
-POSE_PAIRS = [[1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13],
-              [1, 0], [0, 14], [14, 16], [0, 15], [15, 17], [2, 17], [5, 16]]
+
+keypoint_smoother = KeypointSmoother()
+keypoint_graph = KeypointGraph()
+
 
 def draw_keypoints(frame):
-    global keypoints_list, detected_keypoints, personwiseKeypoints
+    global detected_keypoints
 
-    if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
+    if detected_keypoints is not None:
         scale_factor = frame.shape[0] / H
         offset_w = int(frame.shape[1] - W * scale_factor) // 2
 
         def scale(point):
             return int(point[0] * scale_factor) + offset_w, int(point[1] * scale_factor)
-
-        for i in range(18):
-            for j in range(len(detected_keypoints[i])):
-                cv2.circle(frame, scale(detected_keypoints[i][j][0:2]), 5, colors[i], -1, cv2.LINE_AA)
-        for i in range(17):
-            for n in range(len(personwiseKeypoints)):
-                index = personwiseKeypoints[n][np.array(POSE_PAIRS[i])]
-                if -1 in index:
-                    continue
-                B = np.int32(keypoints_list[index.astype(int), 0])
-                A = np.int32(keypoints_list[index.astype(int), 1])
-                cv2.line(frame, scale((B[0], A[0])), scale((B[1], A[1])), colors[i], 3, cv2.LINE_AA)
+        
+        detected_keypoints = keypoint_smoother.smooth_keypoints(detected_keypoints)
+        vertices, edges = keypoint_graph.generate_continuous_graph(detected_keypoints)
+        
+        for vertex, color in vertices:
+            kp = detected_keypoints[vertex]
+            cv2.circle(frame, scale(kp[0:2]), 5, color, -1, cv2.LINE_AA)
+            
+        for edge_a, edge_b, color in edges:
+            kp_a = detected_keypoints[edge_a]
+            kp_b = detected_keypoints[edge_b]
+            cv2.line(frame, scale(kp_a[0:2]), scale(kp_b[0:2]), color, 3, cv2.LINE_AA)
 
 
 def decode_thread(in_queue):
-    global keypoints_list, detected_keypoints, personwiseKeypoints
+    global detected_keypoints
 
     while running:
         try:
@@ -74,26 +72,18 @@ def decode_thread(in_queue):
         outputs = np.concatenate((heatmaps, pafs), axis=1)
 
         new_keypoints = []
-        new_keypoints_list = np.zeros((0, 3))
-        keypoint_id = 0
 
         for row in range(18):
             probMap = outputs[0, row, :, :]
             probMap = cv2.resize(probMap, (W, H))  # (456, 256)
             keypoints = getKeypoints(probMap, 0.3)
-            new_keypoints_list = np.vstack([new_keypoints_list, *keypoints])
-            keypoints_with_id = []
 
-            for i in range(len(keypoints)):
-                keypoints_with_id.append(keypoints[i] + (keypoint_id,))
-                keypoint_id += 1
+            if len(keypoints) > 0:
+                new_keypoints.append(keypoints[0])
+            else:
+                new_keypoints.append(None)
 
-            new_keypoints.append(keypoints_with_id)
-
-        valid_pairs, invalid_pairs = getValidPairs(outputs, w=W, h=H, detected_keypoints=new_keypoints)
-        newPersonwiseKeypoints = getPersonwiseKeypoints(valid_pairs, invalid_pairs, new_keypoints_list)
-
-        detected_keypoints, keypoints_list, personwiseKeypoints = (new_keypoints, new_keypoints_list, newPersonwiseKeypoints)
+        detected_keypoints = new_keypoints
 
 # parse arguments
 parser = argparse.ArgumentParser()
